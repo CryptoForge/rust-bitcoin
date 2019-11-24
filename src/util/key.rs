@@ -21,6 +21,8 @@ use std::{io, ops};
 use std::str::FromStr;
 
 use secp256k1::{self, Secp256k1};
+use secp256k1::key::{SecretKey};
+use util::address::Address;
 use consensus::encode;
 use network::constants::Network;
 use util::base58;
@@ -116,6 +118,41 @@ impl PrivateKey {
             compressed: self.compressed,
             key: secp256k1::PublicKey::from_secret_key(secp, &self.key)
         }
+    }
+
+    /// Converts a private key to a legacy (non-segwit) address
+    #[inline]
+    pub fn to_legacy_address<C: secp256k1::Signing>(&self, secp: &Secp256k1<C>) -> Address {
+        if self.compressed {
+            Address::p2pkh(&self.public_key(secp), self.network)
+        }
+        else {
+            Address::p2upkh(&self.public_key(secp), self.network)
+        }
+    }
+
+    /// Accessor for the underlying secp key
+    #[inline]
+    pub fn secret_key(&self) -> &SecretKey {
+        &self.key
+    }
+
+    /// Accessor for the underlying secp key that consumes the privkey
+    #[inline]
+    pub fn into_secret_key(self) -> SecretKey {
+        self.key
+    }
+
+    /// Accessor for the network type
+    #[inline]
+    pub fn network(&self) -> Network {
+        self.network
+    }
+
+    /// Accessor for the compressed flag
+    #[inline]
+    pub fn is_compressed(&self) -> bool {
+        self.compressed
     }
 
     /// Serialize the private key to bytes

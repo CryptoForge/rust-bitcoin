@@ -45,12 +45,15 @@ use std::str::FromStr;
 
 use bech32;
 use hashes::{hash160, sha256, Hash};
+//use secp256k1::key::PublicKey;
 
 use blockdata::opcodes;
 use blockdata::script;
 use network::constants::Network;
 use util::base58;
 use util::key;
+
+const T_ADDR_LEN : usize = 22;
 
 /// Address error.
 #[derive(Debug, PartialEq)]
@@ -251,6 +254,20 @@ impl Address {
         }
     }
 
+    /// Creates a pay to uncompressed public key hash address from a public key
+    /// This address type is discouraged as it uses more space but otherwise equivalent to p2pkh
+    /// therefore only adds ambiguity
+    #[inline]
+    pub fn p2upkh(pk: &key::PublicKey, network: Network) -> Address {
+        let mut hash_engine = hash160::Hash::engine();
+        pk.write_into(&mut hash_engine);
+
+        Address {
+            network: network,
+            payload: Payload::PubkeyHash(hash160::Hash::from_engine(hash_engine)),
+        }
+    }
+
     /// Creates a pay to script hash P2SH address from a script
     /// This address type was introduced with BIP16 and is the popular type to implement multi-sig these days.
     #[inline]
@@ -366,125 +383,91 @@ impl Address {
 impl Display for Address {
     fn fmt(&self, fmt: &mut Formatter) -> fmt::Result {
         match self.payload {
+            // note: serialization for pay-to-pk is defined, but is irreversible
             Payload::PubkeyHash(ref hash) => {
-                let mut prefixed = [0; 21];
+                let mut prefixed = [0; T_ADDR_LEN];
                 prefixed[0] = match self.network {
-                    Network::Bitcoin => 0,
-                    Network::Testnet | Network::Regtest => 111,
+                    Network::Bitcoin => 0x1C,
+                    Network::Testnet | Network::Regtest => 0x1D,
                 };
-                prefixed[1..].copy_from_slice(&hash[..]);
+                prefixed[1] = match self.network {
+                    Network::Bitcoin => 0xB8,
+                    Network::Testnet | Network::Regtest => 0x25,
+                };
+                prefixed[2..].copy_from_slice(&hash[..]);
                 base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
-            }
+            },
             Payload::ScriptHash(ref hash) => {
-                let mut prefixed = [0; 21];
-                prefixed[0] = match self.network {
-                    Network::Bitcoin => 5,
-                    Network::Testnet | Network::Regtest => 196,
+                let mut prefixed = [0; T_ADDR_LEN];
+                prefixed[0] = 0x1C;
+                prefixed[1] = match self.network {
+                    Network::Bitcoin => 0xBD,
+                    Network::Testnet | Network::Regtest => 0xBA,
                 };
-                prefixed[1..].copy_from_slice(&hash[..]);
+                prefixed[2..].copy_from_slice(&hash[..]);
                 base58::check_encode_slice_to_fmt(fmt, &prefixed[..])
-            }
+            },
             Payload::WitnessProgram {
-                version: ver,
-                program: ref prog,
+                version: _ver,
+                program: ref _prog,
             } => {
-                let hrp = match self.network {
-                    Network::Bitcoin => "bc",
-                    Network::Testnet => "tb",
-                    Network::Regtest => "bcrt",
-                };
-                let mut bech32_writer = bech32::Bech32Writer::new(hrp, fmt)?;
-                bech32::WriteBase32::write_u5(&mut bech32_writer, ver)?;
-                bech32::ToBase32::write_base32(&prog, &mut bech32_writer)
-            }
+                panic!("WitnessProgram does not supported");
+            },
         }
     }
 }
 
 /// Extract the bech32 prefix.
 /// Returns the same slice when no prefix is found.
-fn find_bech32_prefix(bech32: &str) -> &str {
-    // Split at the last occurrence of the separator character '1'.
-    match bech32.rfind("1") {
-        None => bech32,
-        Some(sep) => bech32.split_at(sep).0,
-    }
-}
+// fn find_bech32_prefix(bech32: &str) -> &str {
+//     // Split at the last occurrence of the separator character '1'.
+//     match bech32.rfind("1") {
+//         None => bech32,
+//         Some(sep) => bech32.split_at(sep).0,
+//     }
+// }
 
 impl FromStr for Address {
     type Err = Error;
 
     fn from_str(s: &str) -> Result<Address, Error> {
-        // try bech32
-        let bech32_network = match find_bech32_prefix(s) {
-            // note that upper or lowercase is allowed but NOT mixed case
-            "bc" | "BC" => Some(Network::Bitcoin),
-            "tb" | "TB" => Some(Network::Testnet),
-            "bcrt" | "BCRT" => Some(Network::Regtest),
-            _ => None,
-        };
-        if let Some(network) = bech32_network {
-            // decode as bech32
-            let (_, payload) = bech32::decode(s)?;
-            if payload.len() == 0 {
-                return Err(Error::EmptyBech32Payload);
-            }
-
-            // Get the script version and program (converted from 5-bit to 8-bit)
-            let (version, program): (bech32::u5, Vec<u8>) = {
-                let (v, p5) = payload.split_at(1);
-                (v[0], bech32::FromBase32::from_base32(p5)?)
-            };
-
-            // Generic segwit checks.
-            if version.to_u8() > 16 {
-                return Err(Error::InvalidWitnessVersion(version.to_u8()));
-            }
-            if program.len() < 2 || program.len() > 40 {
-                return Err(Error::InvalidWitnessProgramLength(program.len()));
-            }
-
-            // Specific segwit v0 check.
-            if version.to_u8() == 0 && (program.len() != 20 && program.len() != 32) {
-                return Err(Error::InvalidSegwitV0ProgramLength(program.len()));
-            }
-
-            return Ok(Address {
-                payload: Payload::WitnessProgram {
-                    version: version,
-                    program: program,
-                },
-                network: network,
-            });
+        // bech32 (note that upper or lowercase is allowed but NOT mixed case)
+        if s.starts_with("bc1") || s.starts_with("BC1") ||
+           s.starts_with("tb1") || s.starts_with("TB1") ||
+           s.starts_with("bcrt1") || s.starts_with("BCRT1")
+        {
+            panic!("Wrong address!");
         }
 
-        // Base58
         if s.len() > 50 {
             return Err(Error::Base58(base58::Error::InvalidLength(s.len() * 11 / 15)));
         }
+
+        // Base 58
         let data = base58::from_check(s)?;
-        if data.len() != 21 {
+
+        if data.len() != T_ADDR_LEN {
             return Err(Error::Base58(base58::Error::InvalidLength(data.len())));
         }
 
-        let (network, payload) = match data[0] {
-            0 => (
-                Network::Bitcoin,
-                Payload::PubkeyHash(hash160::Hash::from_slice(&data[1..]).unwrap()),
-            ),
-            5 => (
-                Network::Bitcoin,
-                Payload::ScriptHash(hash160::Hash::from_slice(&data[1..]).unwrap()),
-            ),
-            111 => (
+        let (network, payload) = match &data[0..2] {
+            [0x1D, 0x25] => (
                 Network::Testnet,
-                Payload::PubkeyHash(hash160::Hash::from_slice(&data[1..]).unwrap()),
+                Payload::PubkeyHash(hash160::Hash::hash(&data[2..]))
             ),
-            196 => (
+            [0x1C, 0xBD] => (
+                Network::Bitcoin,
+                Payload::ScriptHash(hash160::Hash::hash(&data[2..]))
+            ),
+            [0x1C, 0xB8] => (
+                Network::Bitcoin,
+                Payload::PubkeyHash(hash160::Hash::hash(&data[2..]))
+            ),
+            [0x1C, 0xBA] => (
                 Network::Testnet,
-                Payload::ScriptHash(hash160::Hash::from_slice(&data[1..]).unwrap()),
+                Payload::ScriptHash(hash160::Hash::hash(&data[2..]))
             ),
-            x => return Err(Error::Base58(base58::Error::InvalidVersion(vec![x]))),
+            _   => return Err(Error::Base58(base58::Error::Other("Invalid version".to_string())))
         };
 
         Ok(Address {
